@@ -1,0 +1,7 @@
+{
+  "name": "LocalVocal Project Hub",
+  "description": "A comprehensive project management and interactive playground for LocalVocal: The local, Replicate-style voice/audio interface.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
