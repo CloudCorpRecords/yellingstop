@@ -1,11 +1,12 @@
 
 export enum View {
   DASHBOARD = 'DASHBOARD',
-  SCOPE_OF_WORK = 'SCOPE_OF_WORK',
+  LOCAL_REGISTRY = 'LOCAL_REGISTRY',
   API_PLAYGROUND = 'API_PLAYGROUND',
   LIVE_DEMO = 'LIVE_DEMO',
   ARCHITECTURE = 'ARCHITECTURE',
-  GEMINI_STUDIO = 'GEMINI_STUDIO'
+  GEMINI_STUDIO = 'GEMINI_STUDIO',
+  MODEL_CONTROL = 'MODEL_CONTROL'
 }
 
 export interface Milestone {
@@ -29,4 +30,6 @@ export interface ModelConfig {
   type: 'TTS' | 'STT' | 'Hotword';
   provider: string;
   benchmarks: string;
+  vram?: string;
+  quantization?: string;
 }
