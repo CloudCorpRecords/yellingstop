@@ -1,20 +1,45 @@
+# LocalVocal Project Hub
+
 <div align="center">
 <img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
 </div>
 
-# Run and deploy your AI Studio app
+A powerful, Electron-based desktop application for managing local voice interfaces and AI models. This project serves as a central hub for your local AI experiments.
 
-This contains everything you need to run your app locally.
+## Features
+*   **Unified Dashboard**: Manage your projects and models in one place.
+*   **Electron Desktop App**: Native desktop experience with auto-updates.
+*   **Live Voice Interface**: Interact with your models using voice.
+*   **Local Registry**: Keep track of your local AI resources.
 
-View your app in AI Studio: https://ai.studio/apps/drive/1SIRV5tG5e_G_pIkKExXvUxzxjEhv4O-6
+## Quick Start
 
-## Run Locally
+### Prerequisites
+*   Node.js installed on your machine.
+*   Git.
 
-**Prerequisites:**  Node.js
+### Installation
 
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/CloudCorpRecords/yellingstop.git
+    cd yellingstop
+    ```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+2.  Run the unified launcher:
+    ```bash
+    ./launcher.sh
+    ```
+
+    The launcher will automatically:
+    *   Install dependencies (if needed).
+    *   Check for updates (`git pull`).
+    *   Launch the application in development mode with Developer Tools enabled.
+
+## Configuration
+
+Create a `.env.local` file in the root directory and add your API keys:
+
+```env
+GEMINI_API_KEY=your_api_key_here
+```
