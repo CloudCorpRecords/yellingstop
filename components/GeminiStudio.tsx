@@ -2,15 +2,22 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ai, createPcmBlob, decodeAudio, convertToAudioBuffer } from '../services/gemini';
 import { Modality } from '@google/genai';
+import * as ollama from '../services/ollama';
 
 const GeminiStudio: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'console' | 'registry'>('console');
-  const [messages, setMessages] = useState<{role: 'user' | 'model', text: string, links?: any[], latency?: number, isDeep?: boolean}[]>([]);
+  const [messages, setMessages] = useState<{ role: 'user' | 'model', text: string, links?: any[], latency?: number, isDeep?: boolean, isLocal?: boolean }[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [hasKey, setHasKey] = useState<boolean>(false);
   const [isDeepResearch, setIsDeepResearch] = useState(false);
-  
+
+  // Local Model State
+  const [useLocalModel, setUseLocalModel] = useState(false);
+  const [localModels, setLocalModels] = useState<ollama.OllamaModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [ollamaOnline, setOllamaOnline] = useState(false);
+
   // Advanced Telemetry & Voice State
   const [isLiveMode, setIsLiveMode] = useState(false);
   const [voiceState, setVoiceState] = useState<'idle' | 'listening' | 'reasoning' | 'responding' | 'searching'>('idle');
@@ -41,6 +48,24 @@ const GeminiStudio: React.FC = () => {
       }
     };
     checkKey();
+
+    // Check Ollama status and load local models
+    const checkOllama = async () => {
+      const status = await ollama.checkOllamaStatus();
+      setOllamaOnline(status.running);
+      if (status.running) {
+        const models = await ollama.listModels();
+        setLocalModels(models);
+        if (models.length > 0 && !selectedModel) {
+          setSelectedModel(models[0].name);
+        }
+      }
+    };
+    checkOllama();
+
+    // Poll Ollama status
+    const interval = setInterval(checkOllama, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -56,17 +81,17 @@ const GeminiStudio: React.FC = () => {
   }, [systemTrace]);
 
   const addTrace = (msg: string) => {
-    const timestamp = new Date().toLocaleTimeString('en-US', { 
-      hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', 
+    const timestamp = new Date().toLocaleTimeString('en-US', {
+      hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
       // @ts-ignore
-      fractionalSecondDigits: 2 
+      fractionalSecondDigits: 2
     } as any);
     setSystemTrace(prev => [...prev.slice(-25), `[${timestamp}] ${msg}`]);
   };
 
   const stopLiveAudio = () => {
     activeSourcesRef.current.forEach(source => {
-      try { source.stop(); } catch(e) {}
+      try { source.stop(); } catch (e) { }
     });
     activeSourcesRef.current.clear();
     nextStartTimeRef.current = 0;
@@ -84,10 +109,10 @@ const GeminiStudio: React.FC = () => {
       addTrace('UP_LINK :: ESTABLISHING_DUPLEX_WSS');
       setIsLiveMode(true);
       setLiveLinks([]);
-      
-      audioContextInRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 16000});
-      audioContextOutRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
-      
+
+      audioContextInRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      audioContextOutRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
@@ -101,11 +126,11 @@ const GeminiStudio: React.FC = () => {
             addTrace('LINK_READY :: MULTIMODAL_AUDIO_INGRESS_OPEN');
             const source = audioContextInRef.current!.createMediaStreamSource(stream);
             const scriptProcessor = audioContextInRef.current!.createScriptProcessor(4096, 1, 1);
-            
+
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               let sum = 0;
-              for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
+              for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
               const rms = Math.sqrt(sum / inputData.length);
               setUserVolume(rms * 12);
 
@@ -114,7 +139,7 @@ const GeminiStudio: React.FC = () => {
                 session.sendRealtimeInput({ media: pcmBlob });
               });
             };
-            
+
             source.connect(scriptProcessor);
             scriptProcessor.connect(audioContextInRef.current!.destination);
           },
@@ -144,10 +169,10 @@ const GeminiStudio: React.FC = () => {
             if (message.serverContent?.turnComplete) {
               const latency = turnStartTime.current ? Math.round(performance.now() - turnStartTime.current) : 0;
               setProcessingTime(latency);
-              
+
               if (currentInputTranscription || currentOutputTranscription) {
                 setMessages(prev => [
-                  ...prev, 
+                  ...prev,
                   ...(currentInputTranscription ? [{ role: 'user' as const, text: currentInputTranscription }] : []),
                   ...(currentOutputTranscription ? [{ role: 'model' as const, text: currentOutputTranscription, latency }] : [])
                 ]);
@@ -167,12 +192,12 @@ const GeminiStudio: React.FC = () => {
               }
               const ctx = audioContextOutRef.current;
               nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
-              
+
               const buffer = await convertToAudioBuffer(decodeAudio(audioData), ctx, 24000, 1);
               const source = ctx.createBufferSource();
               source.buffer = buffer;
               source.connect(ctx.destination);
-              
+
               source.addEventListener('ended', () => {
                 activeSourcesRef.current.delete(source);
                 if (activeSourcesRef.current.size === 0) setModelVolume(0);
@@ -239,25 +264,65 @@ const GeminiStudio: React.FC = () => {
     setInput('');
     setMessages(prev => [...prev, { role: 'user', text: userMsg }]);
     setLoading(true);
+
+    // Local Model Mode
+    if (useLocalModel && selectedModel && ollamaOnline) {
+      addTrace(`LOCAL_INFERENCE :: ${selectedModel}`);
+      try {
+        let responseText = '';
+        await ollama.generate(
+          selectedModel,
+          userMsg,
+          (token) => {
+            responseText += token;
+            // Update message in real-time for streaming effect
+            setMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last?.role === 'model' && last?.isLocal) {
+                return [...prev.slice(0, -1), { ...last, text: responseText }];
+              }
+              return [...prev, { role: 'model', text: responseText, isLocal: true }];
+            });
+          }
+        );
+        const latency = Math.round(performance.now() - start);
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'model' && last?.isLocal) {
+            return [...prev.slice(0, -1), { ...last, latency }];
+          }
+          return prev;
+        });
+        addTrace(`LOCAL_COMPLETE :: ${latency}ms`);
+      } catch (err) {
+        addTrace('LOCAL_FAILURE :: OLLAMA_ERROR');
+        setMessages(prev => [...prev, { role: 'model', text: 'Local model error. Check Ollama.', isLocal: true }]);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // Cloud Mode (Gemini)
     addTrace(`RESEARCH_MODE :: ${isDeepResearch ? 'DEEP_PRO_INFERENCE' : 'FAST_FLASH_INFERENCE'}`);
 
     try {
       const response = await ai.models.generateContent({
         model: isDeepResearch ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview',
         contents: userMsg,
-        config: { 
+        config: {
           tools: [{ googleSearch: {} }],
-          systemInstruction: isDeepResearch 
-            ? "You are a professional research agent. Use Google Search extensively to provide high-fidelity, verified, and detailed answers with citations." 
+          systemInstruction: isDeepResearch
+            ? "You are a professional research agent. Use Google Search extensively to provide high-fidelity, verified, and detailed answers with citations."
             : "You are a fast intelligence engine. Provide grounded answers using Google Search. Be concise."
         }
       });
 
       const latency = Math.round(performance.now() - start);
       const links = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => chunk.web).filter(Boolean);
-      
-      setMessages(prev => [...prev, { 
-        role: 'model', 
+
+      setMessages(prev => [...prev, {
+        role: 'model',
         text: response.text || 'Inference error.',
         links,
         latency,
@@ -278,35 +343,83 @@ const GeminiStudio: React.FC = () => {
       <div className="flex flex-col md:flex-row md:items-center justify-between bg-black/40 p-5 rounded-[2rem] border border-white/5 backdrop-blur-2xl shadow-2xl">
         <div className="flex items-center space-x-5">
           <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all duration-700 shadow-[0_0_30px_rgba(37,99,235,0.2)] ${isLiveMode ? 'bg-blue-600 rotate-12' : 'bg-white/5'}`}>
-             <svg className={`w-7 h-7 ${isLiveMode ? 'text-white' : 'text-gray-600'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
-             </svg>
+            <svg className={`w-7 h-7 ${isLiveMode ? 'text-white' : 'text-gray-600'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
           </div>
           <div>
             <h1 className="text-2xl font-black tracking-tighter uppercase italic">Gemini <span className="text-blue-500">Studio</span></h1>
             <div className="flex items-center space-x-3 mt-0.5">
-               <div className={`w-2 h-2 rounded-full ${isLiveMode ? 'bg-green-500 shadow-[0_0_10px_#22c55e] animate-pulse' : 'bg-red-500'}`}></div>
-               <span className="text-[10px] font-mono uppercase tracking-[0.4em] text-gray-500 leading-none">
-                 {isLiveMode ? 'Native_Intelligence_Flow' : 'Engine_Standby'}
-               </span>
+              <div className={`w-2 h-2 rounded-full ${isLiveMode ? 'bg-green-500 shadow-[0_0_10px_#22c55e] animate-pulse' : 'bg-red-500'}`}></div>
+              <span className="text-[10px] font-mono uppercase tracking-[0.4em] text-gray-500 leading-none">
+                {isLiveMode ? 'Native_Intelligence_Flow' : 'Engine_Standby'}
+              </span>
             </div>
           </div>
         </div>
 
-        <div className="flex items-center space-x-6 mt-4 md:mt-0">
-          <div className="flex items-center bg-black/40 px-4 py-2 rounded-xl border border-white/10 group cursor-pointer" onClick={() => setIsDeepResearch(!isDeepResearch)}>
-             <div className={`w-3 h-3 rounded-full mr-3 transition-all ${isDeepResearch ? 'bg-blue-500 shadow-[0_0_8px_#3b82f6]' : 'bg-gray-700'}`}></div>
-             <span className={`text-[10px] font-black tracking-widest uppercase transition-colors ${isDeepResearch ? 'text-blue-400' : 'text-gray-600 group-hover:text-gray-400'}`}>Deep_Research_Mode</span>
+        <div className="flex items-center space-x-4 mt-4 md:mt-0">
+          {/* Local Model Toggle */}
+          <div
+            className={`flex items-center bg-black/40 px-4 py-2 rounded-xl border cursor-pointer transition-all ${useLocalModel ? 'border-emerald-500/50 bg-emerald-500/10' : 'border-white/10'}`}
+            onClick={() => setUseLocalModel(!useLocalModel)}
+          >
+            <div className={`w-3 h-3 rounded-full mr-3 transition-all ${useLocalModel ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : 'bg-gray-700'}`}></div>
+            <span className={`text-[10px] font-black tracking-widest uppercase transition-colors ${useLocalModel ? 'text-emerald-400' : 'text-gray-600'}`}>
+              Local_Mode
+            </span>
           </div>
-          
+
+          {/* Model Selector - Only show when local mode is on */}
+          {useLocalModel && (
+            <div className="relative">
+              <select
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                className="appearance-none bg-black/60 border border-white/10 rounded-xl px-4 py-2 pr-8 text-xs font-mono text-white outline-none focus:border-blue-500 min-w-[150px]"
+              >
+                {localModels.length === 0 ? (
+                  <option value="">No models installed</option>
+                ) : (
+                  localModels.map(m => (
+                    <option key={m.name} value={m.name}>{m.name}</option>
+                  ))
+                )}
+              </select>
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+                <svg className="w-3 h-3 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </div>
+            </div>
+          )}
+
+          {/* Ollama Status */}
+          {useLocalModel && (
+            <div className={`flex items-center space-x-2 px-3 py-2 rounded-lg ${ollamaOnline ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
+              <div className={`w-2 h-2 rounded-full ${ollamaOnline ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+              <span className={`text-[9px] font-black uppercase ${ollamaOnline ? 'text-emerald-400' : 'text-red-400'}`}>
+                {ollamaOnline ? 'Ollama' : 'Offline'}
+              </span>
+            </div>
+          )}
+
+          {/* Deep Research - Only show in cloud mode */}
+          {!useLocalModel && (
+            <div className="flex items-center bg-black/40 px-4 py-2 rounded-xl border border-white/10 group cursor-pointer" onClick={() => setIsDeepResearch(!isDeepResearch)}>
+              <div className={`w-3 h-3 rounded-full mr-3 transition-all ${isDeepResearch ? 'bg-blue-500 shadow-[0_0_8px_#3b82f6]' : 'bg-gray-700'}`}></div>
+              <span className={`text-[10px] font-black tracking-widest uppercase transition-colors ${isDeepResearch ? 'text-blue-400' : 'text-gray-600 group-hover:text-gray-400'}`}>Deep_Research</span>
+            </div>
+          )}
+
           <div className="flex bg-[#111111] p-1 rounded-xl border border-white/10 shadow-inner">
-            <button 
+            <button
               onClick={() => setActiveTab('console')}
               className={`px-6 py-2 rounded-lg text-[10px] font-black tracking-[0.2em] transition-all ${activeTab === 'console' ? 'bg-white text-black shadow-xl' : 'text-gray-500 hover:text-gray-300'}`}
             >
               CONSOLE
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('registry')}
               className={`px-6 py-2 rounded-lg text-[10px] font-black tracking-[0.2em] transition-all ${activeTab === 'registry' ? 'bg-white text-black shadow-xl' : 'text-gray-500 hover:text-gray-300'}`}
             >
@@ -319,67 +432,64 @@ const GeminiStudio: React.FC = () => {
       <div className="grid grid-cols-12 gap-6 h-[760px]">
         {/* LEFT PANEL: KINETIC UI & TELEMETRY */}
         <div className="col-span-12 lg:col-span-3 flex flex-col space-y-4">
-           {/* High-Fidelity Visualizer */}
-           <div className="bg-[#0c0c0c] border border-white/5 rounded-[2.5rem] p-8 h-[45%] flex flex-col items-center justify-center relative overflow-hidden group shadow-inner">
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(37,99,235,0.1),transparent_70%)] opacity-50"></div>
-              
-              <div className="relative z-10 flex flex-col items-center">
-                 <div className="relative mb-10">
-                    <div className={`absolute -inset-10 rounded-full transition-all duration-700 opacity-20 blur-2xl ${
-                      voiceState === 'listening' ? 'bg-blue-500' : 
-                      voiceState === 'responding' ? 'bg-emerald-500' : 
-                      voiceState === 'searching' ? 'bg-amber-500 animate-ping' : 'bg-white/5'
-                    }`} style={{ transform: `scale(${1 + (voiceState === 'listening' ? userVolume : modelVolume) * 0.5})` }}></div>
-                    
-                    <div className={`w-32 h-32 rounded-full border-4 transition-all duration-500 flex items-center justify-center ${
-                      voiceState === 'responding' ? 'border-emerald-400 shadow-[0_0_60px_rgba(52,211,153,0.3)]' : 
-                      voiceState === 'listening' ? 'border-blue-400 shadow-[0_0_60px_rgba(96,165,250,0.3)]' : 
-                      voiceState === 'searching' ? 'border-amber-400 shadow-[0_0_60px_rgba(251,191,36,0.3)]' : 'border-white/5'
-                    }`}>
-                       <div className="flex items-end space-x-2 h-14">
-                          {[...Array(8)].map((_, i) => (
-                            <div 
-                              key={i} 
-                              className={`w-1.5 rounded-full transition-all duration-100 ${
-                                voiceState === 'listening' ? 'bg-blue-400' : 
-                                voiceState === 'responding' ? 'bg-emerald-400' : 
-                                voiceState === 'searching' ? 'bg-amber-400' : 'bg-gray-800'
-                              }`} 
-                              style={{ height: `${20 + (voiceState === 'listening' ? userVolume * (15 + i) : voiceState === 'responding' ? modelVolume * 40 : voiceState === 'searching' ? 50 + Math.random() * 30 : 0)}%` }}
-                            ></div>
-                          ))}
-                       </div>
-                    </div>
-                 </div>
-                 <div className="text-[11px] font-black tracking-[0.6em] text-gray-500 uppercase text-center ml-2 flex items-center">
-                    {voiceState === 'reasoning' ? (
-                      <span className="text-amber-400 animate-pulse">Neural_Reasoning...</span>
-                    ) : voiceState === 'searching' ? (
-                      <span className="text-blue-400 animate-pulse">Web_Crawl_Grounding...</span>
-                    ) : (
-                      voiceState === 'idle' ? 'Ready_Node' : voiceState
-                    )}
-                 </div>
-              </div>
-           </div>
+          {/* High-Fidelity Visualizer */}
+          <div className="bg-[#0c0c0c] border border-white/5 rounded-[2.5rem] p-8 h-[45%] flex flex-col items-center justify-center relative overflow-hidden group shadow-inner">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(37,99,235,0.1),transparent_70%)] opacity-50"></div>
 
-           {/* Diagnostics Terminal */}
-           <div className="bg-black border border-white/5 rounded-[2.5rem] p-6 flex-1 flex flex-col overflow-hidden shadow-2xl relative">
-              <div className="text-[10px] font-black text-blue-500/60 uppercase tracking-[0.3em] mb-4 flex items-center justify-between">
-                 <span>Live_Trace</span>
-                 <div className="flex-1 h-[1px] bg-white/5 mx-4"></div>
-                 <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+            <div className="relative z-10 flex flex-col items-center">
+              <div className="relative mb-10">
+                <div className={`absolute -inset-10 rounded-full transition-all duration-700 opacity-20 blur-2xl ${voiceState === 'listening' ? 'bg-blue-500' :
+                  voiceState === 'responding' ? 'bg-emerald-500' :
+                    voiceState === 'searching' ? 'bg-amber-500 animate-ping' : 'bg-white/5'
+                  }`} style={{ transform: `scale(${1 + (voiceState === 'listening' ? userVolume : modelVolume) * 0.5})` }}></div>
+
+                <div className={`w-32 h-32 rounded-full border-4 transition-all duration-500 flex items-center justify-center ${voiceState === 'responding' ? 'border-emerald-400 shadow-[0_0_60px_rgba(52,211,153,0.3)]' :
+                  voiceState === 'listening' ? 'border-blue-400 shadow-[0_0_60px_rgba(96,165,250,0.3)]' :
+                    voiceState === 'searching' ? 'border-amber-400 shadow-[0_0_60px_rgba(251,191,36,0.3)]' : 'border-white/5'
+                  }`}>
+                  <div className="flex items-end space-x-2 h-14">
+                    {[...Array(8)].map((_, i) => (
+                      <div
+                        key={i}
+                        className={`w-1.5 rounded-full transition-all duration-100 ${voiceState === 'listening' ? 'bg-blue-400' :
+                          voiceState === 'responding' ? 'bg-emerald-400' :
+                            voiceState === 'searching' ? 'bg-amber-400' : 'bg-gray-800'
+                          }`}
+                        style={{ height: `${20 + (voiceState === 'listening' ? userVolume * (15 + i) : voiceState === 'responding' ? modelVolume * 40 : voiceState === 'searching' ? 50 + Math.random() * 30 : 0)}%` }}
+                      ></div>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <div className="flex-1 overflow-y-auto space-y-2 font-mono text-[9.5px] text-gray-600 scrollbar-hide">
-                 {systemTrace.map((trace, i) => (
-                   <div key={i} className={`flex items-start space-x-3 ${i === systemTrace.length - 1 ? 'text-blue-400 font-bold bg-blue-500/5 px-2 py-1 rounded' : 'opacity-70'}`}>
-                      <span className="opacity-30">&gt;</span>
-                      <span className="break-all">{trace}</span>
-                   </div>
-                 ))}
-                 <div ref={traceEndRef}></div>
+              <div className="text-[11px] font-black tracking-[0.6em] text-gray-500 uppercase text-center ml-2 flex items-center">
+                {voiceState === 'reasoning' ? (
+                  <span className="text-amber-400 animate-pulse">Neural_Reasoning...</span>
+                ) : voiceState === 'searching' ? (
+                  <span className="text-blue-400 animate-pulse">Web_Crawl_Grounding...</span>
+                ) : (
+                  voiceState === 'idle' ? 'Ready_Node' : voiceState
+                )}
               </div>
-           </div>
+            </div>
+          </div>
+
+          {/* Diagnostics Terminal */}
+          <div className="bg-black border border-white/5 rounded-[2.5rem] p-6 flex-1 flex flex-col overflow-hidden shadow-2xl relative">
+            <div className="text-[10px] font-black text-blue-500/60 uppercase tracking-[0.3em] mb-4 flex items-center justify-between">
+              <span>Live_Trace</span>
+              <div className="flex-1 h-[1px] bg-white/5 mx-4"></div>
+              <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-2 font-mono text-[9.5px] text-gray-600 scrollbar-hide">
+              {systemTrace.map((trace, i) => (
+                <div key={i} className={`flex items-start space-x-3 ${i === systemTrace.length - 1 ? 'text-blue-400 font-bold bg-blue-500/5 px-2 py-1 rounded' : 'opacity-70'}`}>
+                  <span className="opacity-30">&gt;</span>
+                  <span className="break-all">{trace}</span>
+                </div>
+              ))}
+              <div ref={traceEndRef}></div>
+            </div>
+          </div>
         </div>
 
         {/* CENTER PANEL: INTELLIGENCE REPOSITORY */}
@@ -389,22 +499,22 @@ const GeminiStudio: React.FC = () => {
               {/* Telemetry Dashboard */}
               {isLiveMode && (
                 <div className="h-14 border-b border-white/5 bg-black/80 px-10 flex items-center justify-between animate-fadeIn backdrop-blur-3xl z-20">
-                   <div className="flex items-center space-x-12">
-                      <div className="flex flex-col">
-                         <span className="text-[8px] text-gray-600 font-black uppercase tracking-widest mb-1">Inference_Latency</span>
-                         <span className="text-sm font-mono text-emerald-400 tabular-nums">{processingTime}ms</span>
-                      </div>
-                      <div className={`flex flex-col transition-opacity ${voiceState === 'searching' ? 'opacity-100' : 'opacity-40'}`}>
-                         <span className="text-[8px] text-gray-600 font-black uppercase tracking-widest mb-1">Search_Status</span>
-                         <span className="text-sm font-mono text-blue-400 uppercase tracking-tighter">Grounding_Active</span>
-                      </div>
-                   </div>
-                   <div className="flex flex-col items-end">
-                      <span className="text-[8px] text-gray-600 font-black uppercase tracking-widest mb-1">Signal_Stability</span>
-                      <div className="flex space-x-0.5">
-                         {[...Array(4)].map((_, i) => <div key={i} className="w-1 h-3 bg-blue-500 rounded-sm"></div>)}
-                      </div>
-                   </div>
+                  <div className="flex items-center space-x-12">
+                    <div className="flex flex-col">
+                      <span className="text-[8px] text-gray-600 font-black uppercase tracking-widest mb-1">Inference_Latency</span>
+                      <span className="text-sm font-mono text-emerald-400 tabular-nums">{processingTime}ms</span>
+                    </div>
+                    <div className={`flex flex-col transition-opacity ${voiceState === 'searching' ? 'opacity-100' : 'opacity-40'}`}>
+                      <span className="text-[8px] text-gray-600 font-black uppercase tracking-widest mb-1">Search_Status</span>
+                      <span className="text-sm font-mono text-blue-400 uppercase tracking-tighter">Grounding_Active</span>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end">
+                    <span className="text-[8px] text-gray-600 font-black uppercase tracking-widest mb-1">Signal_Stability</span>
+                    <div className="flex space-x-0.5">
+                      {[...Array(4)].map((_, i) => <div key={i} className="w-1 h-3 bg-blue-500 rounded-sm"></div>)}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -417,54 +527,53 @@ const GeminiStudio: React.FC = () => {
                       </svg>
                     </div>
                     <div className="space-y-2">
-                       <h3 className="text-4xl font-black tracking-tighter uppercase opacity-50 italic">Knowledge Hub</h3>
-                       <p className="text-[10px] uppercase tracking-[0.3em] font-mono">Synthesizing World Evidence via Google Search</p>
+                      <h3 className="text-4xl font-black tracking-tighter uppercase opacity-50 italic">Knowledge Hub</h3>
+                      <p className="text-[10px] uppercase tracking-[0.3em] font-mono">Synthesizing World Evidence via Google Search</p>
                     </div>
                   </div>
                 )}
 
                 {messages.map((msg, i) => (
                   <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fadeIn`}>
-                    <div className={`max-w-[85%] p-7 rounded-[2.5rem] relative group transition-all ${
-                      msg.role === 'user' 
-                        ? 'bg-blue-600 text-white rounded-br-none shadow-2xl shadow-blue-900/20' 
-                        : 'bg-[#121212] border border-white/5 text-gray-100 rounded-bl-none shadow-inner'
-                    }`}>
+                    <div className={`max-w-[85%] p-7 rounded-[2.5rem] relative group transition-all ${msg.role === 'user'
+                      ? 'bg-blue-600 text-white rounded-br-none shadow-2xl shadow-blue-900/20'
+                      : 'bg-[#121212] border border-white/5 text-gray-100 rounded-bl-none shadow-inner'
+                      }`}>
                       {msg.role === 'model' && (
                         <div className="absolute -top-3 -left-3">
-                           <div className={`w-8 h-8 rounded-lg flex items-center justify-center border border-white/10 ${msg.isDeep ? 'bg-blue-600 text-white shadow-lg' : 'bg-black text-blue-500'}`}>
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={msg.isDeep ? "M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0010 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" : "M13 10V3L4 14h7v7l9-11h-7z"} />
-                              </svg>
-                           </div>
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center border border-white/10 ${msg.isDeep ? 'bg-blue-600 text-white shadow-lg' : 'bg-black text-blue-500'}`}>
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={msg.isDeep ? "M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0010 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" : "M13 10V3L4 14h7v7l9-11h-7z"} />
+                            </svg>
+                          </div>
                         </div>
                       )}
 
                       <div className="prose prose-invert prose-sm leading-relaxed font-medium">
-                         {msg.text}
+                        {msg.text}
                       </div>
-                      
+
                       {msg.latency && (
                         <div className="mt-4 flex items-center justify-between opacity-0 group-hover:opacity-100 transition-opacity">
-                           <div className="flex space-x-3">
-                              <span className="text-[9px] font-mono text-gray-500 uppercase">Latency: {msg.latency}ms</span>
-                              <span className="text-[9px] font-mono text-gray-500 uppercase tracking-tighter">Engine: {msg.isDeep ? '3_PRO' : '3_FLASH'}</span>
-                           </div>
-                           <span className="text-[9px] font-mono text-blue-500 uppercase">Search_Grounding_Verified</span>
+                          <div className="flex space-x-3">
+                            <span className="text-[9px] font-mono text-gray-500 uppercase">Latency: {msg.latency}ms</span>
+                            <span className="text-[9px] font-mono text-gray-500 uppercase tracking-tighter">Engine: {msg.isDeep ? '3_PRO' : '3_FLASH'}</span>
+                          </div>
+                          <span className="text-[9px] font-mono text-blue-500 uppercase">Search_Grounding_Verified</span>
                         </div>
                       )}
 
                       {msg.links && msg.links.length > 0 && (
                         <div className="mt-6 pt-5 border-t border-white/5 grid grid-cols-1 gap-2">
-                           <div className="text-[9px] font-black text-gray-600 uppercase tracking-[0.2em] mb-1">Source Intelligence (Grounding)</div>
+                          <div className="text-[9px] font-black text-gray-600 uppercase tracking-[0.2em] mb-1">Source Intelligence (Grounding)</div>
                           {msg.links.map((link, li) => (
                             <a key={li} href={link.uri} target="_blank" rel="noopener noreferrer" className="flex items-center space-x-3 p-3 bg-white/5 border border-white/5 rounded-2xl hover:bg-white/10 hover:border-blue-500/30 transition-all group/link">
                               <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center flex-shrink-0">
-                                 <svg className="w-4 h-4 text-blue-400 group-hover/link:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                <svg className="w-4 h-4 text-blue-400 group-hover/link:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
                               </div>
                               <div className="min-w-0">
-                                 <div className="text-[11px] font-bold text-gray-300 truncate underline decoration-transparent group-hover/link:decoration-blue-500 decoration-1 underline-offset-4">{link.title || link.uri}</div>
-                                 <div className="text-[8px] font-mono text-gray-600 truncate opacity-50">{link.uri}</div>
+                                <div className="text-[11px] font-bold text-gray-300 truncate underline decoration-transparent group-hover/link:decoration-blue-500 decoration-1 underline-offset-4">{link.title || link.uri}</div>
+                                <div className="text-[8px] font-mono text-gray-600 truncate opacity-50">{link.uri}</div>
                               </div>
                             </a>
                           ))}
@@ -480,11 +589,10 @@ const GeminiStudio: React.FC = () => {
                 <div className="flex items-center space-x-8">
                   <button
                     onClick={isLiveMode ? stopLiveMode : startLiveMode}
-                    className={`w-24 h-24 flex items-center justify-center rounded-[2.5rem] transition-all relative group shadow-2xl ${
-                      isLiveMode 
-                        ? 'bg-red-500/10 text-red-500 border border-red-500/40 ring-[12px] ring-red-500/5' 
-                        : 'bg-white text-black hover:scale-105 active:scale-95 shadow-white/5'
-                    }`}
+                    className={`w-24 h-24 flex items-center justify-center rounded-[2.5rem] transition-all relative group shadow-2xl ${isLiveMode
+                      ? 'bg-red-500/10 text-red-500 border border-red-500/40 ring-[12px] ring-red-500/5'
+                      : 'bg-white text-black hover:scale-105 active:scale-95 shadow-white/5'
+                      }`}
                   >
                     <div className="absolute -inset-4 rounded-full bg-current opacity-0 group-hover:opacity-10 blur-xl transition-opacity"></div>
                     <svg className="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -493,7 +601,7 @@ const GeminiStudio: React.FC = () => {
                   </button>
 
                   <div className="flex-1 relative flex items-center">
-                    <input 
+                    <input
                       type="text"
                       value={input}
                       onChange={(e) => setInput(e.target.value)}
@@ -503,13 +611,13 @@ const GeminiStudio: React.FC = () => {
                       className={`w-full bg-[#121212] border-2 rounded-[2rem] py-7 pl-12 pr-44 focus:outline-none transition-all placeholder-gray-700 disabled:opacity-20 text-base font-mono tracking-tight shadow-inner ${isDeepResearch ? 'border-blue-500/50 ring-4 ring-blue-500/5' : 'border-white/5'}`}
                     />
                     <div className="absolute right-4 flex items-center space-x-2">
-                       <button 
-                         onClick={handleSendText}
-                         disabled={loading || !input.trim() || isLiveMode}
-                         className="bg-blue-600 text-white px-10 py-4 rounded-2xl text-xs font-black tracking-[0.2em] hover:bg-blue-500 disabled:opacity-50 transition-all shadow-xl shadow-blue-600/30 uppercase"
-                       >
-                         {loading ? 'Thinking' : 'Search'}
-                       </button>
+                      <button
+                        onClick={handleSendText}
+                        disabled={loading || !input.trim() || isLiveMode}
+                        className="bg-blue-600 text-white px-10 py-4 rounded-2xl text-xs font-black tracking-[0.2em] hover:bg-blue-500 disabled:opacity-50 transition-all shadow-xl shadow-blue-600/30 uppercase"
+                      >
+                        {loading ? 'Thinking' : 'Search'}
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -531,11 +639,11 @@ const GeminiStudio: React.FC = () => {
                   <div className="space-y-3 relative z-10">
                     <div className="text-2xl font-black uppercase tracking-tight">Identity Bridge</div>
                     <div className="text-xs font-mono text-emerald-400 uppercase tracking-[0.3em] flex items-center">
-                       <div className="w-2 h-2 bg-emerald-500 rounded-full mr-3 animate-pulse shadow-[0_0_8px_#10b981]"></div>
-                       ENCRYPTED_WSS_ACTIVE
+                      <div className="w-2 h-2 bg-emerald-500 rounded-full mr-3 animate-pulse shadow-[0_0_8px_#10b981]"></div>
+                      ENCRYPTED_WSS_ACTIVE
                     </div>
                   </div>
-                  <button 
+                  <button
                     // @ts-ignore
                     onClick={() => window.aistudio?.openSelectKey?.()}
                     className="bg-white text-black px-14 py-6 rounded-[2rem] font-black text-xs tracking-[0.4em] hover:scale-105 active:scale-95 transition-all shadow-2xl relative z-10"
@@ -546,19 +654,19 @@ const GeminiStudio: React.FC = () => {
 
                 <div className="grid grid-cols-2 gap-8">
                   <div className="p-10 bg-[#0f0f0f] border border-white/5 rounded-[3rem] shadow-inner">
-                     <div className="text-[11px] uppercase tracking-[0.5em] text-gray-600 font-black mb-4">Signal_Core</div>
-                     <div className="text-sm font-mono text-blue-400">Gemini 2.5 Flash Native</div>
+                    <div className="text-[11px] uppercase tracking-[0.5em] text-gray-600 font-black mb-4">Signal_Core</div>
+                    <div className="text-sm font-mono text-blue-400">Gemini 2.5 Flash Native</div>
                   </div>
                   <div className="p-10 bg-[#0f0f0f] border border-white/5 rounded-[3rem] shadow-inner">
-                     <div className="text-[11px] uppercase tracking-[0.5em] text-gray-600 font-black mb-4">Search_Graph</div>
-                     <div className="text-sm font-mono text-emerald-400">Google Grounding v5</div>
+                    <div className="text-[11px] uppercase tracking-[0.5em] text-gray-600 font-black mb-4">Search_Graph</div>
+                    <div className="text-sm font-mono text-emerald-400">Google Grounding v5</div>
                   </div>
                 </div>
               </div>
 
               <div className="p-12 bg-blue-600/5 border border-blue-500/20 rounded-[3.5rem] relative overflow-hidden group shadow-2xl">
                 <div className="absolute top-0 right-0 p-8 opacity-5 group-hover:opacity-20 transition-opacity">
-                   <svg className="w-32 h-32" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5-10-5-10 5zM2 12l10 5 10-5-10-5-10 5z"/></svg>
+                  <svg className="w-32 h-32" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5-10-5-10 5zM2 12l10 5 10-5-10-5-10 5z" /></svg>
                 </div>
                 <div className="flex items-start space-x-8 relative z-10">
                   <div className="mt-2 text-blue-500">
@@ -580,37 +688,37 @@ const GeminiStudio: React.FC = () => {
         {liveLinks.length > 0 && (
           <div className="lg:col-span-3 bg-black/60 border border-white/5 rounded-[3rem] overflow-hidden flex flex-col shadow-2xl animate-slideInRight backdrop-blur-xl">
             <div className="p-8 border-b border-white/5 bg-white/5 flex items-center justify-between">
-               <h3 className="text-[11px] font-black uppercase tracking-[0.4em] text-gray-500">Research_Vault</h3>
-               <div className="px-4 py-1.5 rounded-full bg-blue-500 text-black text-[11px] font-black shadow-[0_0_20px_rgba(59,130,246,0.6)] animate-pulse">{liveLinks.length}</div>
+              <h3 className="text-[11px] font-black uppercase tracking-[0.4em] text-gray-500">Research_Vault</h3>
+              <div className="px-4 py-1.5 rounded-full bg-blue-500 text-black text-[11px] font-black shadow-[0_0_20px_rgba(59,130,246,0.6)] animate-pulse">{liveLinks.length}</div>
             </div>
             <div className="flex-1 overflow-y-auto p-6 space-y-4 scrollbar-hide">
-               {liveLinks.map((link, idx) => (
-                 <a 
-                   key={idx} 
-                   href={link.uri} 
-                   target="_blank" 
-                   rel="noopener noreferrer" 
-                   className="block p-5 bg-[#141414] border border-white/10 rounded-[2rem] hover:border-blue-500/50 hover:bg-blue-500/10 transition-all group animate-fadeIn shadow-lg"
-                   style={{ animationDelay: `${idx * 0.15}s` }}
-                 >
-                    <div className="flex items-start space-x-5">
-                       <div className="w-11 h-11 rounded-2xl bg-blue-500/20 flex items-center justify-center flex-shrink-0 group-hover:bg-blue-500/30 transition-colors">
-                          <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-                       </div>
-                       <div className="min-w-0">
-                          <div className="text-[12px] font-black text-gray-100 truncate group-hover:text-blue-400 transition-colors uppercase tracking-tight leading-tight">{link.title || 'Knowledge Piece'}</div>
-                          <div className="text-[9px] font-mono text-gray-600 truncate mt-1.5 uppercase tracking-tighter opacity-50">{link.uri}</div>
-                       </div>
+              {liveLinks.map((link, idx) => (
+                <a
+                  key={idx}
+                  href={link.uri}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block p-5 bg-[#141414] border border-white/10 rounded-[2rem] hover:border-blue-500/50 hover:bg-blue-500/10 transition-all group animate-fadeIn shadow-lg"
+                  style={{ animationDelay: `${idx * 0.15}s` }}
+                >
+                  <div className="flex items-start space-x-5">
+                    <div className="w-11 h-11 rounded-2xl bg-blue-500/20 flex items-center justify-center flex-shrink-0 group-hover:bg-blue-500/30 transition-colors">
+                      <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
                     </div>
-                 </a>
-               ))}
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-black text-gray-100 truncate group-hover:text-blue-400 transition-colors uppercase tracking-tight leading-tight">{link.title || 'Knowledge Piece'}</div>
+                      <div className="text-[9px] font-mono text-gray-600 truncate mt-1.5 uppercase tracking-tighter opacity-50">{link.uri}</div>
+                    </div>
+                  </div>
+                </a>
+              ))}
             </div>
             <div className="p-7 bg-blue-600/5 text-center border-t border-white/5">
-               <div className="flex items-center justify-center space-x-3 mb-1">
-                  <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-ping"></div>
-                  <p className="text-[9px] text-blue-400 font-black uppercase tracking-[0.4em]">Integrated_Grounding_V5</p>
-               </div>
-               <p className="text-[8px] text-gray-600 font-bold uppercase">Real-time Evidence Stream Active</p>
+              <div className="flex items-center justify-center space-x-3 mb-1">
+                <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-ping"></div>
+                <p className="text-[9px] text-blue-400 font-black uppercase tracking-[0.4em]">Integrated_Grounding_V5</p>
+              </div>
+              <p className="text-[8px] text-gray-600 font-bold uppercase">Real-time Evidence Stream Active</p>
             </div>
           </div>
         )}
