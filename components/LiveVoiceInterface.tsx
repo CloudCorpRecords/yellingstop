@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { audioService } from '../services/audio';
 import * as ollama from '../services/ollama';
 import * as whisper from '../services/whisper';
+import { ttsService } from '../services/tts';
 
 const LiveVoiceInterface: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
@@ -13,7 +14,10 @@ const LiveVoiceInterface: React.FC = () => {
   const [response, setResponse] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [ttsEnabled, setTtsEnabled] = useState(true);
   const recognitionRef = useRef<any>(null);
+  const fullResponseRef = useRef<string>('');
 
   // Check Ollama status on mount
   useEffect(() => {
@@ -91,6 +95,7 @@ const LiveVoiceInterface: React.FC = () => {
 
     // Use the transcription we captured from Web Speech API
     const capturedText = transcription.trim();
+    let aiResponse = '';
 
     if (capturedText && ollamaOnline) {
       setStatus('Thinking...');
@@ -98,18 +103,38 @@ const LiveVoiceInterface: React.FC = () => {
       if (models.length > 0) {
         const modelToUse = models[0].name;
         setResponse('');
+        fullResponseRef.current = '';
         await ollama.generate(
           modelToUse,
-          `The user said: "${capturedText}". Respond helpfully and concisely.`,
-          (token) => setResponse(prev => prev + token)
+          `The user said: "${capturedText}". Respond helpfully and concisely in 1-2 sentences.`,
+          (token) => {
+            fullResponseRef.current += token;
+            setResponse(prev => prev + token);
+          }
         );
+        aiResponse = fullResponseRef.current;
       } else {
-        setResponse('No Ollama models installed. Pull a model in the Model Engine tab.');
+        aiResponse = 'No Ollama models installed. Pull a model in the Model Engine tab.';
+        setResponse(aiResponse);
       }
     } else if (capturedText) {
-      setResponse('Ollama is offline. Start it with: ollama serve');
+      aiResponse = 'Ollama is offline. Start it with: ollama serve';
+      setResponse(aiResponse);
     } else {
-      setResponse('No speech detected. Try speaking into your microphone.');
+      aiResponse = 'No speech detected. Try speaking into your microphone.';
+      setResponse(aiResponse);
+    }
+
+    // Speak the response if TTS is enabled
+    if (ttsEnabled && aiResponse) {
+      setStatus('Speaking...');
+      setIsSpeaking(true);
+      try {
+        await ttsService.speak(aiResponse);
+      } catch (e) {
+        console.error('TTS error:', e);
+      }
+      setIsSpeaking(false);
     }
 
     setStatus('Ready');
