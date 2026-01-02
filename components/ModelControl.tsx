@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as ollama from '../services/ollama';
+import * as hf from '../services/huggingface';
 
 interface LocalModel {
   id: string;
@@ -32,6 +33,13 @@ const ModelControl: React.FC = () => {
   const [logs, setLogs] = useState<string[]>(['OLLAMA_INIT :: CHECKING_STATUS']);
   const logEndRef = useRef<HTMLDivElement>(null);
 
+  // Hugging Face state
+  const [hfModels, setHfModels] = useState<hf.HFModel[]>([]);
+  const [hfSearchQuery, setHfSearchQuery] = useState('');
+  const [hfSearchResults, setHfSearchResults] = useState<hf.HFModel[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [activeTab, setActiveTab] = useState<'ollama' | 'huggingface'>('ollama');
+
   const addLog = (msg: string) => {
     const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
     setLogs(prev => [...prev.slice(-15), `[${time}] ${msg}`]);
@@ -54,6 +62,12 @@ const ModelControl: React.FC = () => {
         addLog('OLLAMA_OFFLINE :: START_OLLAMA_SERVICE');
       }
       setIsLoading(false);
+
+      // Fetch trending HuggingFace models
+      addLog('HF_FETCH :: TRENDING_VOICE_MODELS');
+      const trending = await hf.getTrendingVoiceModels();
+      setHfModels(trending);
+      addLog(`HF_LOADED :: ${trending.length}_MODELS`);
     };
 
     init();
@@ -72,6 +86,22 @@ const ModelControl: React.FC = () => {
 
     return () => clearInterval(interval);
   }, []);
+
+  // HuggingFace search
+  const searchHuggingFace = async () => {
+    if (!hfSearchQuery.trim()) return;
+    setIsSearching(true);
+    addLog(`HF_SEARCH :: ${hfSearchQuery}`);
+
+    const results = await hf.searchModels(hfSearchQuery, {
+      task: 'automatic-speech-recognition',
+      limit: 20,
+    });
+
+    setHfSearchResults(results);
+    addLog(`HF_RESULTS :: ${results.length}_FOUND`);
+    setIsSearching(false);
+  };
 
   const refreshModels = async () => {
     const models = await ollama.listModels();
@@ -137,8 +167,8 @@ const ModelControl: React.FC = () => {
 
         <div className="flex bg-black/40 p-1.5 rounded-2xl border border-white/5 shadow-inner">
           <div className={`flex items-center space-x-2 px-4 py-2 rounded-xl border ${ollamaStatus.running
-              ? 'border-emerald-500/20 bg-emerald-600/10'
-              : 'border-red-500/20 bg-red-600/10'
+            ? 'border-emerald-500/20 bg-emerald-600/10'
+            : 'border-red-500/20 bg-red-600/10'
             }`}>
             <div className={`w-2 h-2 rounded-full ${ollamaStatus.running ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`}></div>
             <span className={`text-[10px] font-black uppercase tracking-widest ${ollamaStatus.running ? 'text-emerald-400' : 'text-red-400'
