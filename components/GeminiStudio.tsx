@@ -17,6 +17,9 @@ const GeminiStudio: React.FC = () => {
   const [localModels, setLocalModels] = useState<ollama.OllamaModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [ollamaOnline, setOllamaOnline] = useState(false);
+  const [runningModels, setRunningModels] = useState<ollama.RunningModel[]>([]);
+  const [showModelPanel, setShowModelPanel] = useState(false);
+  const [modelLoading, setModelLoading] = useState<string | null>(null);
 
   // Advanced Telemetry & Voice State
   const [isLiveMode, setIsLiveMode] = useState(false);
@@ -59,14 +62,39 @@ const GeminiStudio: React.FC = () => {
         if (models.length > 0 && !selectedModel) {
           setSelectedModel(models[0].name);
         }
+        // Get running models
+        const running = await ollama.getRunningModels();
+        setRunningModels(running);
       }
     };
     checkOllama();
 
     // Poll Ollama status
-    const interval = setInterval(checkOllama, 5000);
+    const interval = setInterval(checkOllama, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  // Load model into memory
+  const handleLoadModel = async (modelName: string) => {
+    setModelLoading(modelName);
+    addTrace(`LOAD_MODEL :: ${modelName}`);
+    await ollama.loadModel(modelName);
+    const running = await ollama.getRunningModels();
+    setRunningModels(running);
+    setModelLoading(null);
+    addTrace(`MODEL_LOADED :: ${modelName}`);
+  };
+
+  // Unload model from memory
+  const handleUnloadModel = async (modelName: string) => {
+    setModelLoading(modelName);
+    addTrace(`UNLOAD_MODEL :: ${modelName}`);
+    await ollama.unloadModel(modelName);
+    const running = await ollama.getRunningModels();
+    setRunningModels(running);
+    setModelLoading(null);
+    addTrace(`MODEL_UNLOADED :: ${modelName}`);
+  };
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -394,15 +422,97 @@ const GeminiStudio: React.FC = () => {
             </div>
           )}
 
-          {/* Ollama Status */}
-          {useLocalModel && (
-            <div className={`flex items-center space-x-2 px-3 py-2 rounded-lg ${ollamaOnline ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
-              <div className={`w-2 h-2 rounded-full ${ollamaOnline ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
-              <span className={`text-[9px] font-black uppercase ${ollamaOnline ? 'text-emerald-400' : 'text-red-400'}`}>
-                {ollamaOnline ? 'Ollama' : 'Offline'}
+          {/* Running Models Button */}
+          <div className="relative">
+            <button
+              onClick={() => setShowModelPanel(!showModelPanel)}
+              className={`flex items-center space-x-2 px-3 py-2 rounded-lg border transition-all ${runningModels.length > 0 ? 'border-blue-500/30 bg-blue-500/10' : 'border-white/10 bg-black/40'}`}
+            >
+              <div className={`w-2 h-2 rounded-full ${runningModels.length > 0 ? 'bg-blue-500 animate-pulse' : 'bg-gray-600'}`}></div>
+              <span className={`text-[9px] font-black uppercase ${runningModels.length > 0 ? 'text-blue-400' : 'text-gray-500'}`}>
+                {runningModels.length} Running
               </span>
-            </div>
-          )}
+              <svg className={`w-3 h-3 ${runningModels.length > 0 ? 'text-blue-400' : 'text-gray-600'} transition-transform ${showModelPanel ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {/* Running Models Panel */}
+            {showModelPanel && (
+              <div className="absolute top-full right-0 mt-2 w-80 bg-[#0a0a0a] border border-white/10 rounded-2xl shadow-2xl z-50 overflow-hidden">
+                <div className="p-4 border-b border-white/5 flex items-center justify-between">
+                  <span className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Model Management</span>
+                  <span className={`text-[9px] font-mono ${ollamaOnline ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {ollamaOnline ? 'Ollama Online' : 'Offline'}
+                  </span>
+                </div>
+
+                {/* Running Models */}
+                {runningModels.length > 0 && (
+                  <div className="p-3 border-b border-white/5">
+                    <div className="text-[9px] font-bold text-emerald-400 uppercase mb-2">In Memory</div>
+                    {runningModels.map(m => (
+                      <div key={m.name} className="flex items-center justify-between py-2 px-2 bg-emerald-500/5 rounded-lg mb-1">
+                        <div className="flex-1">
+                          <div className="text-xs font-mono text-white">{m.name}</div>
+                          <div className="text-[9px] text-gray-500">
+                            RAM: {ollama.formatSize(m.size)} | VRAM: {ollama.formatSize(m.size_vram)}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleUnloadModel(m.name)}
+                          disabled={modelLoading === m.name}
+                          className="px-2 py-1 text-[9px] font-bold bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 disabled:opacity-50"
+                        >
+                          {modelLoading === m.name ? '...' : 'Unload'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Available Models */}
+                <div className="p-3 max-h-60 overflow-y-auto">
+                  <div className="text-[9px] font-bold text-gray-500 uppercase mb-2">Installed ({localModels.length})</div>
+                  {localModels.map(m => {
+                    const isRunning = runningModels.some(r => r.name === m.name);
+                    return (
+                      <div key={m.name} className="flex items-center justify-between py-2 px-2 hover:bg-white/5 rounded-lg">
+                        <div className="flex-1">
+                          <div className="flex items-center space-x-2">
+                            {isRunning && <div className="w-1.5 h-1.5 rounded-full bg-emerald-500"></div>}
+                            <span className="text-xs font-mono text-gray-300">{m.name}</span>
+                          </div>
+                          <div className="text-[9px] text-gray-600">
+                            {ollama.formatSize(m.size)} • {m.details?.parameter_size || 'unknown'} • {m.details?.quantization_level || ''}
+                          </div>
+                        </div>
+                        {!isRunning && (
+                          <button
+                            onClick={() => handleLoadModel(m.name)}
+                            disabled={modelLoading === m.name}
+                            className="px-2 py-1 text-[9px] font-bold bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30 disabled:opacity-50"
+                          >
+                            {modelLoading === m.name ? '...' : 'Load'}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Memory Usage Footer */}
+                <div className="p-3 bg-black/50 border-t border-white/5">
+                  <div className="flex items-center justify-between text-[9px]">
+                    <span className="text-gray-500">Total VRAM Used</span>
+                    <span className="font-mono text-blue-400">
+                      {ollama.formatSize(runningModels.reduce((a, m) => a + m.size_vram, 0))}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Deep Research - Only show in cloud mode */}
           {!useLocalModel && (
