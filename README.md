@@ -26,15 +26,11 @@ A powerful, Electron-based desktop application for managing local voice interfac
     cd yellingstop
     ```
 
-2.  Run the unified launcher:
-    ```bash
-    ./launcher.sh
-    ```
+2.  **To Run the App**:
+    Double-click `Run LocalVocal.command` to start the application.
 
-    The launcher will automatically:
-    *   Install dependencies (if needed).
-    *   Check for updates (`git pull`).
-    *   Launch the application in development mode with Developer Tools enabled.
+3.  **To Update**:
+    Double-click `Update.command` to pull the latest changes and install dependencies.
 
 ## Configuration
 
