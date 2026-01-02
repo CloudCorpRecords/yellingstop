@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { audioService } from '../services/audio';
 import * as ollama from '../services/ollama';
+import * as whisper from '../services/whisper';
 
 const LiveVoiceInterface: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
@@ -11,6 +12,8 @@ const LiveVoiceInterface: React.FC = () => {
   const [recordedChunks, setRecordedChunks] = useState<Float32Array[]>([]);
   const [response, setResponse] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
 
   // Check Ollama status on mount
   useEffect(() => {
@@ -29,9 +32,34 @@ const LiveVoiceInterface: React.FC = () => {
     setTranscription('');
     setResponse('');
 
+    // Start Web Speech API for live transcription
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.lang = 'en-US';
+      recognitionRef.current.continuous = true;
+      recognitionRef.current.interimResults = true;
+
+      recognitionRef.current.onresult = (event: any) => {
+        let interim = '';
+        let final = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            final += transcript + ' ';
+          } else {
+            interim = transcript;
+          }
+        }
+        setTranscription(prev => (final || interim) ? (prev + final).trim() + (interim ? ` ${interim}` : '') : prev);
+      };
+
+      recognitionRef.current.start();
+      setIsListening(true);
+    }
+
     const success = await audioService.startRecording(
       (audioData) => {
-        // Collect audio chunks for later processing
         setRecordedChunks(prev => [...prev, audioData]);
       },
       (level) => {
@@ -48,43 +76,40 @@ const LiveVoiceInterface: React.FC = () => {
   };
 
   const stopRecording = async () => {
+    // Stop speech recognition
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+      setIsListening(false);
+    }
+
     audioService.stopRecording();
     setIsRecording(false);
     setAudioLevel(0);
     setStatus('Processing...');
     setIsProcessing(true);
 
-    // Combine all recorded chunks
-    if (recordedChunks.length > 0) {
-      const totalLength = recordedChunks.reduce((acc, chunk) => acc + chunk.length, 0);
-      const combined = new Float32Array(totalLength);
-      let offset = 0;
-      for (const chunk of recordedChunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-      }
+    // Use the transcription we captured from Web Speech API
+    const capturedText = transcription.trim();
 
-      // For now, show placeholder - actual transcription will come in Phase 3
-      setTranscription('[Audio captured - Whisper integration in Phase 3]');
-
-      // If Ollama is running, we can send a prompt
-      if (ollamaOnline) {
-        setStatus('Thinking...');
-        const models = await ollama.listModels();
-        if (models.length > 0) {
-          const modelToUse = models[0].name;
-          setResponse('');
-          await ollama.generate(
-            modelToUse,
-            'The user just spoke to you via voice. Respond briefly as a helpful AI assistant. Say something like "I heard you! Voice transcription is coming soon."',
-            (token) => setResponse(prev => prev + token)
-          );
-        } else {
-          setResponse('No Ollama models installed. Pull a model in the Model Engine tab.');
-        }
+    if (capturedText && ollamaOnline) {
+      setStatus('Thinking...');
+      const models = await ollama.listModels();
+      if (models.length > 0) {
+        const modelToUse = models[0].name;
+        setResponse('');
+        await ollama.generate(
+          modelToUse,
+          `The user said: "${capturedText}". Respond helpfully and concisely.`,
+          (token) => setResponse(prev => prev + token)
+        );
       } else {
-        setResponse('Ollama is offline. Start it with: ollama serve');
+        setResponse('No Ollama models installed. Pull a model in the Model Engine tab.');
       }
+    } else if (capturedText) {
+      setResponse('Ollama is offline. Start it with: ollama serve');
+    } else {
+      setResponse('No speech detected. Try speaking into your microphone.');
     }
 
     setStatus('Ready');
@@ -113,12 +138,12 @@ const LiveVoiceInterface: React.FC = () => {
             {/* Visualizer Orb */}
             <div className="relative">
               <div className={`w-56 h-56 rounded-full blur-[60px] absolute -inset-8 transition-all duration-300 ${isRecording ? 'bg-blue-600/40 scale-125' :
-                  isProcessing ? 'bg-amber-500/40 animate-pulse' :
-                    'bg-gray-800/10'
+                isProcessing ? 'bg-amber-500/40 animate-pulse' :
+                  'bg-gray-800/10'
                 }`}></div>
               <div className={`w-48 h-48 rounded-full border-4 flex items-center justify-center transition-all duration-500 shadow-[inset_0_0_40px_rgba(0,0,0,0.5)] overflow-hidden ${isRecording ? 'border-blue-500 bg-blue-950/20 shadow-[0_0_40px_rgba(59,130,246,0.2)]' :
-                  isProcessing ? 'border-amber-500 bg-amber-950/20' :
-                    'border-white/5 bg-white/5'
+                isProcessing ? 'border-amber-500 bg-amber-950/20' :
+                  'border-white/5 bg-white/5'
                 }`}>
                 {isRecording ? (
                   <div className="flex items-end space-x-1.5 h-20">
@@ -157,8 +182,8 @@ const LiveVoiceInterface: React.FC = () => {
               onClick={isRecording ? stopRecording : startRecording}
               disabled={isProcessing}
               className={`px-12 py-5 rounded-[2rem] font-black text-xs uppercase tracking-[0.2em] transition-all transform active:scale-95 shadow-2xl disabled:opacity-50 ${isRecording
-                  ? 'bg-red-500/10 border border-red-500/50 text-red-500 hover:bg-red-500 hover:text-white'
-                  : 'bg-white text-black hover:bg-gray-200'
+                ? 'bg-red-500/10 border border-red-500/50 text-red-500 hover:bg-red-500 hover:text-white'
+                : 'bg-white text-black hover:bg-gray-200'
                 }`}
             >
               {isRecording ? 'Stop Recording' : 'Start Recording'}
